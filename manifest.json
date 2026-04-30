@@ -1,0 +1,18 @@
+{
+  "id": "com.jumang.completion-sound",
+  "name": "Completion Sound",
+  "version": "0.1.0",
+  "githubRepo": "jumang4423/codex-completion-sound",
+  "description": "Plays sounds when a Codex turn starts and finishes.",
+  "author": {
+    "name": "jumang4423"
+  },
+  "tags": [
+    "notification",
+    "sound",
+    "productivity"
+  ],
+  "scope": "both",
+  "main": "index.js",
+  "minRuntime": "0.1.1"
+}
