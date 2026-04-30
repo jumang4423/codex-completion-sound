@@ -33,6 +33,8 @@ const DEFAULT_CONFIG = {
   cooldownMs: 2500,
   activityCooldownMs: 350,
   minBusyMs: 900,
+  taskHeatEnabled: true,
+  taskHeatMaxMs: 10000,
 };
 
 const MAC_SOUNDS = {
@@ -491,6 +493,10 @@ async function startRenderer(api) {
     config: await getConfig(api),
     pageHandle: null,
     observer: null,
+    taskHeatObserver: null,
+    taskHeatStyleEl: null,
+    taskHeatItems: new Map(),
+    taskHeatTimer: null,
     messageHandler: null,
     clickHandler: null,
     keyHandler: null,
@@ -504,6 +510,7 @@ async function startRenderer(api) {
   this._state = state;
 
   installRendererDetectors(state);
+  installTaskHeat(state);
   installSettingsPage(state);
 }
 
@@ -512,6 +519,14 @@ function stopRenderer(state) {
   state.pageHandle = null;
   state.observer?.disconnect?.();
   state.observer = null;
+  state.taskHeatObserver?.disconnect?.();
+  state.taskHeatObserver = null;
+  state.taskHeatStyleEl?.remove?.();
+  state.taskHeatStyleEl = null;
+  if (state.taskHeatTimer) clearInterval(state.taskHeatTimer);
+  state.taskHeatTimer = null;
+  for (const el of state.taskHeatItems.keys()) clearTaskHeatElement(el);
+  state.taskHeatItems.clear();
   if (state.messageHandler) window.removeEventListener("message", state.messageHandler, true);
   state.messageHandler = null;
   if (state.clickHandler) document.removeEventListener("click", state.clickHandler, true);
@@ -604,6 +619,163 @@ function checkBusyState(state) {
     if (elapsed >= clampNumber(state.config.minBusyMs, 0, 30000)) {
       signalCompletion(state, { source: "renderer-dom" });
     }
+  }
+}
+
+function installTaskHeat(state) {
+  injectTaskHeatStyles(state);
+  const observer = new MutationObserver((mutations) => {
+    if (state.config.taskHeatEnabled === false) return;
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        collectTaskHeatTargets(state, node);
+      }
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  state.taskHeatObserver = observer;
+  state.taskHeatTimer = setInterval(() => updateTaskHeat(state), 120);
+  collectTaskHeatTargets(state, document.body);
+  updateTaskHeat(state);
+}
+
+function injectTaskHeatStyles(state) {
+  const id = "codex-completion-sound-task-heat";
+  document.getElementById(id)?.remove?.();
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent = `
+    .cpp-task-heat {
+      --cpp-task-heat-opacity: 0;
+      --cpp-task-heat-sat: 70%;
+      --cpp-task-heat-light: 56%;
+      position: relative;
+      border-radius: 8px;
+      background-image:
+        linear-gradient(
+          100deg,
+          hsla(var(--cpp-task-heat-hue-a), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), var(--cpp-task-heat-opacity)),
+          hsla(var(--cpp-task-heat-hue-b), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), calc(var(--cpp-task-heat-opacity) * 0.82)),
+          hsla(var(--cpp-task-heat-hue-c), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), calc(var(--cpp-task-heat-opacity) * 0.72))
+        ) !important;
+      background-blend-mode: screen;
+      transition: background-image 160ms linear, box-shadow 160ms linear;
+    }
+    .cpp-task-heat[data-cpp-task-hot="true"] {
+      box-shadow: inset 0 0 0 1px hsla(var(--cpp-task-heat-hue-a), 85%, 62%, 0.2);
+    }
+  `;
+  document.head.appendChild(style);
+  state.taskHeatStyleEl = style;
+}
+
+function collectTaskHeatTargets(state, node) {
+  if (state.config.taskHeatEnabled === false) return;
+  if (!(node instanceof HTMLElement)) return;
+  const candidates = [];
+  const direct = findTaskHeatTarget(node);
+  if (direct) candidates.push(direct);
+  for (const el of node.querySelectorAll?.("[data-testid],[aria-label],[role='status'],[aria-live],pre,code") || []) {
+    const target = findTaskHeatTarget(el);
+    if (target) candidates.push(target);
+    if (candidates.length > 24) break;
+  }
+  for (const target of candidates) registerTaskHeatTarget(state, target);
+}
+
+function findTaskHeatTarget(el) {
+  if (!(el instanceof HTMLElement) || !isVisible(el)) return null;
+  if (shouldIgnoreTaskHeat(el)) return null;
+
+  const text = compactText([
+    el.getAttribute("data-testid"),
+    el.getAttribute("aria-label"),
+    el.getAttribute("title"),
+    el.getAttribute("class"),
+    el.textContent,
+  ].filter(Boolean).join(" "));
+  if (!isTaskLikeText(text)) return null;
+
+  const container = closestTaskContainer(el);
+  if (!container || shouldIgnoreTaskHeat(container)) return null;
+  return container;
+}
+
+function closestTaskContainer(el) {
+  let current = el;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if (!(current instanceof HTMLElement)) break;
+    const rect = current.getBoundingClientRect();
+    const text = compactText(current.textContent || "");
+    if (rect.width >= 140 && rect.height >= 18 && rect.height <= 260 && text.length <= 4000) {
+      const attrs = compactText([
+        current.getAttribute("data-testid"),
+        current.getAttribute("aria-label"),
+        current.getAttribute("class"),
+      ].filter(Boolean).join(" "));
+      if (isTaskLikeText(attrs) || isTaskLikeText(text)) return current;
+    }
+    current = current.parentElement;
+  }
+  return el;
+}
+
+function isTaskLikeText(text) {
+  return /\b(Ran|Running|Edited|Read|Wrote|Searched|Opened|Created|Updated|Deleted|Patched|Applied|Viewed|Called|Used|Fetched|Listed|Found|Installing|Building|Testing|Executing)\b/i.test(text) ||
+    /\b(function_call|tool_call|command|terminal|exec|shell|patch|diff|npm|bun|node|python|gh|git|rg|sed)\b/i.test(text);
+}
+
+function shouldIgnoreTaskHeat(el) {
+  if (!(el instanceof HTMLElement)) return true;
+  if (el.closest("input,textarea,select,option,button,script,style")) return true;
+  if (el.closest("[data-cpp-task-heat-ignore='true']")) return true;
+  if (el.closest("[class*='settings' i]")) return true;
+  return false;
+}
+
+function registerTaskHeatTarget(state, el) {
+  if (!(el instanceof HTMLElement) || state.taskHeatItems.has(el)) return;
+  state.taskHeatItems.set(el, { startedAt: performance.now(), lastSeenAt: performance.now() });
+  el.classList.add("cpp-task-heat");
+}
+
+function updateTaskHeat(state) {
+  if (state.config.taskHeatEnabled === false) {
+    for (const el of state.taskHeatItems.keys()) clearTaskHeatElement(el);
+    state.taskHeatItems.clear();
+    return;
+  }
+  const now = performance.now();
+  const maxMs = clampNumber(state.config.taskHeatMaxMs, 500, 60000);
+  for (const [el, info] of state.taskHeatItems) {
+    if (!document.documentElement.contains(el)) {
+      state.taskHeatItems.delete(el);
+      continue;
+    }
+    if (!isVisible(el)) continue;
+    const elapsed = now - info.startedAt;
+    const t = Math.min(1, elapsed / maxMs);
+    const opacity = 0.05 + 0.28 * t;
+    const hue = Math.round((elapsed / maxMs) * 300 + 210) % 360;
+    el.style.setProperty("--cpp-task-heat-opacity", opacity.toFixed(3));
+    el.style.setProperty("--cpp-task-heat-hue-a", String(hue));
+    el.style.setProperty("--cpp-task-heat-hue-b", String((hue + 80) % 360));
+    el.style.setProperty("--cpp-task-heat-hue-c", String((hue + 165) % 360));
+    el.dataset.cppTaskHot = String(t > 0.55);
+  }
+}
+
+function clearTaskHeatElement(el) {
+  if (!(el instanceof HTMLElement)) return;
+  el.classList.remove("cpp-task-heat");
+  el.removeAttribute("data-cpp-task-hot");
+  for (const key of [
+    "--cpp-task-heat-opacity",
+    "--cpp-task-heat-hue-a",
+    "--cpp-task-heat-hue-b",
+    "--cpp-task-heat-hue-c",
+  ]) {
+    el.style.removeProperty(key);
   }
 }
 
@@ -932,6 +1104,10 @@ function renderSettings(root, state) {
   card.appendChild(toggleRow("Enabled", state.config.enabled, (enabled) => patchConfig(state, { enabled })));
   card.appendChild(toggleRow("Session log monitor", state.config.monitorSessions, (monitorSessions) => patchConfig(state, { monitorSessions })));
   card.appendChild(toggleRow("Renderer fallback", state.config.rendererFallback, (rendererFallback) => patchConfig(state, { rendererFallback })));
+  card.appendChild(toggleRow("Task heat", state.config.taskHeatEnabled, (taskHeatEnabled) => patchConfig(state, { taskHeatEnabled })));
+  card.appendChild(numberRow("Task heat max", Math.round(state.config.taskHeatMaxMs / 1000), "s", (seconds) => {
+    return patchConfig(state, { taskHeatMaxMs: clampNumber(seconds, 1, 60) * 1000 });
+  }));
   card.appendChild(selectRow("Start Sound", state.config.startSound, Object.keys(MAC_SOUNDS), (startSound) => patchConfig(state, { startSound })));
   card.appendChild(selectRow("Activity Sound", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
   card.appendChild(selectRow("Finish Sound", state.config.finishSound, Object.keys(MAC_SOUNDS), (finishSound) => patchConfig(state, { finishSound })));
@@ -1150,6 +1326,7 @@ function normalizeConfig(value) {
   next.enabled = next.enabled !== false;
   next.monitorSessions = next.monitorSessions !== false;
   next.rendererFallback = next.rendererFallback !== false;
+  next.taskHeatEnabled = next.taskHeatEnabled !== false;
   next.startSound = isKnownSound(next.startSound) ? next.startSound : DEFAULT_CONFIG.startSound;
   next.activitySound = isKnownSound(next.activitySound) ? next.activitySound : DEFAULT_CONFIG.activitySound;
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
@@ -1158,6 +1335,7 @@ function normalizeConfig(value) {
   next.cooldownMs = clampNumber(next.cooldownMs, 0, 60000);
   next.activityCooldownMs = clampNumber(next.activityCooldownMs, 0, 60000);
   next.minBusyMs = clampNumber(next.minBusyMs, 0, 30000);
+  next.taskHeatMaxMs = clampNumber(next.taskHeatMaxMs, 500, 60000);
   return next;
 }
 
