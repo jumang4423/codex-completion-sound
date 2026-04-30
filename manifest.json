@@ -1,7 +1,7 @@
 {
   "id": "com.jumang.completion-sound",
   "name": "Completion Sound",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "githubRepo": "jumang4423/codex-completion-sound",
   "description": "Plays sounds and highlights long-running task rows.",
   "author": {

@@ -35,6 +35,7 @@ const DEFAULT_CONFIG = {
   minBusyMs: 900,
   taskHeatEnabled: true,
   taskHeatMaxMs: 10000,
+  taskHeatSpeedMs: 60000,
 };
 
 const MAC_SOUNDS = {
@@ -649,6 +650,7 @@ function injectTaskHeatStyles(state) {
       --cpp-task-heat-opacity: 0;
       --cpp-task-heat-sat: 70%;
       --cpp-task-heat-light: 56%;
+      --cpp-task-heat-position: 0% 50%;
       position: relative;
       border-radius: 8px;
       background-image:
@@ -656,13 +658,16 @@ function injectTaskHeatStyles(state) {
           100deg,
           hsla(var(--cpp-task-heat-hue-a), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), var(--cpp-task-heat-opacity)),
           hsla(var(--cpp-task-heat-hue-b), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), calc(var(--cpp-task-heat-opacity) * 0.82)),
-          hsla(var(--cpp-task-heat-hue-c), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), calc(var(--cpp-task-heat-opacity) * 0.72))
+          hsla(var(--cpp-task-heat-hue-c), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), calc(var(--cpp-task-heat-opacity) * 0.72)),
+          hsla(var(--cpp-task-heat-hue-d), var(--cpp-task-heat-sat), var(--cpp-task-heat-light), calc(var(--cpp-task-heat-opacity) * 0.62))
         ) !important;
+      background-size: 240% 100%;
+      background-position: var(--cpp-task-heat-position);
       background-blend-mode: screen;
-      transition: background-image 160ms linear, box-shadow 160ms linear;
+      transition: box-shadow 160ms linear;
     }
     .cpp-task-heat[data-cpp-task-hot="true"] {
-      box-shadow: inset 0 0 0 1px hsla(var(--cpp-task-heat-hue-a), 85%, 62%, 0.2);
+      box-shadow: inset 0 0 0 1px hsla(var(--cpp-task-heat-hue-a), 85%, 62%, 0.18);
     }
   `;
   document.head.appendChild(style);
@@ -707,7 +712,7 @@ function closestTaskContainer(el) {
     if (!(current instanceof HTMLElement)) break;
     const rect = current.getBoundingClientRect();
     const text = compactText(current.textContent || "");
-    if (rect.width >= 140 && rect.height >= 18 && rect.height <= 260 && text.length <= 4000) {
+    if (rect.width >= 140 && rect.height >= 18 && rect.height <= 160 && text.length <= 1200) {
       const attrs = compactText([
         current.getAttribute("data-testid"),
         current.getAttribute("aria-label"),
@@ -717,7 +722,7 @@ function closestTaskContainer(el) {
     }
     current = current.parentElement;
   }
-  return el;
+  return null;
 }
 
 function isTaskLikeText(text) {
@@ -747,6 +752,7 @@ function updateTaskHeat(state) {
   }
   const now = performance.now();
   const maxMs = clampNumber(state.config.taskHeatMaxMs, 500, 60000);
+  const speedMs = clampNumber(state.config.taskHeatSpeedMs, maxMs, 180000);
   for (const [el, info] of state.taskHeatItems) {
     if (!document.documentElement.contains(el)) {
       state.taskHeatItems.delete(el);
@@ -755,12 +761,18 @@ function updateTaskHeat(state) {
     if (!isVisible(el)) continue;
     const elapsed = now - info.startedAt;
     const t = Math.min(1, elapsed / maxMs);
-    const opacity = 0.05 + 0.28 * t;
-    const hue = Math.round((elapsed / maxMs) * 300 + 210) % 360;
+    const longT = Math.min(1, elapsed / speedMs);
+    const speed = 0.06 + 1.9 * Math.pow(longT, 1.65);
+    const phase = elapsed * speed;
+    const opacity = 0.04 + 0.18 * t + 0.06 * longT;
+    const hue = Math.round(phase * 0.18 + 210) % 360;
+    const position = ((phase * 0.055) % 240).toFixed(2);
     el.style.setProperty("--cpp-task-heat-opacity", opacity.toFixed(3));
+    el.style.setProperty("--cpp-task-heat-position", `${position}% 50%`);
     el.style.setProperty("--cpp-task-heat-hue-a", String(hue));
     el.style.setProperty("--cpp-task-heat-hue-b", String((hue + 80) % 360));
     el.style.setProperty("--cpp-task-heat-hue-c", String((hue + 165) % 360));
+    el.style.setProperty("--cpp-task-heat-hue-d", String((hue + 245) % 360));
     el.dataset.cppTaskHot = String(t > 0.55);
   }
 }
@@ -771,9 +783,11 @@ function clearTaskHeatElement(el) {
   el.removeAttribute("data-cpp-task-hot");
   for (const key of [
     "--cpp-task-heat-opacity",
+    "--cpp-task-heat-position",
     "--cpp-task-heat-hue-a",
     "--cpp-task-heat-hue-b",
     "--cpp-task-heat-hue-c",
+    "--cpp-task-heat-hue-d",
   ]) {
     el.style.removeProperty(key);
   }
@@ -1108,6 +1122,9 @@ function renderSettings(root, state) {
   card.appendChild(numberRow("Task heat max", Math.round(state.config.taskHeatMaxMs / 1000), "s", (seconds) => {
     return patchConfig(state, { taskHeatMaxMs: clampNumber(seconds, 1, 60) * 1000 });
   }));
+  card.appendChild(numberRow("Task heat speed", Math.round(state.config.taskHeatSpeedMs / 1000), "s", (seconds) => {
+    return patchConfig(state, { taskHeatSpeedMs: clampNumber(seconds, 5, 180) * 1000 });
+  }, { max: 180, step: 5 }));
   card.appendChild(selectRow("Start Sound", state.config.startSound, Object.keys(MAC_SOUNDS), (startSound) => patchConfig(state, { startSound })));
   card.appendChild(selectRow("Activity Sound", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
   card.appendChild(selectRow("Finish Sound", state.config.finishSound, Object.keys(MAC_SOUNDS), (finishSound) => patchConfig(state, { finishSound })));
@@ -1336,6 +1353,7 @@ function normalizeConfig(value) {
   next.activityCooldownMs = clampNumber(next.activityCooldownMs, 0, 60000);
   next.minBusyMs = clampNumber(next.minBusyMs, 0, 30000);
   next.taskHeatMaxMs = clampNumber(next.taskHeatMaxMs, 500, 60000);
+  next.taskHeatSpeedMs = clampNumber(next.taskHeatSpeedMs, next.taskHeatMaxMs, 180000);
   return next;
 }
 
