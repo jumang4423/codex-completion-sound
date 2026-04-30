@@ -54,9 +54,19 @@ const ACTIVITY_SOUND_KEYS = [
   "computer_call",
   "response_item",
 ];
-const DEFAULT_ACTIVITY_SOUNDS = Object.fromEntries(
-  ACTIVITY_SOUND_KEYS.map((key) => [key, RANDOM_POP_SOUND]),
-);
+const DEFAULT_ACTIVITY_SOUNDS = {
+  reasoning: POP3_MP3_SOUND,
+  message: LEGACY_MP3_SOUND,
+  function_call: POP3_MP3_SOUND,
+  function_call_output: POP6_MP3_SOUND,
+  tool_call: POP3_MP3_SOUND,
+  custom_tool_call: POP3_MP3_SOUND,
+  custom_tool_call_output: POP6_MP3_SOUND,
+  local_shell_call: POP4_MP3_SOUND,
+  web_search_call: POP5_MP3_SOUND,
+  computer_call: RANDOM_POP_SOUND,
+  response_item: POP2_MP3_SOUND,
+};
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -64,7 +74,7 @@ const DEFAULT_CONFIG = {
   rendererFallback: true,
   startSound: START_MP3_SOUND,
   finishSound: FINISH_MP3_SOUND,
-  activitySound: RANDOM_POP_SOUND,
+  activitySound: POP6_MP3_SOUND,
   activitySounds: DEFAULT_ACTIVITY_SOUNDS,
   volume: 0.45,
   cooldownMs: 2500,
@@ -73,6 +83,7 @@ const DEFAULT_CONFIG = {
   wideChatEnabled: true,
   chatMaxWidthRem: 88,
   randomPopDefaultsMigrated: true,
+  fixedPopDefaultsMigrated: true,
 };
 
 const MAC_SOUNDS = {
@@ -1283,6 +1294,11 @@ function normalizeConfig(value) {
     next.activitySound = isOldDefaultPopSound(next.activitySound) ? RANDOM_POP_SOUND : next.activitySound;
     next.activitySounds = migrateOldDefaultPopSounds(next.activitySounds);
     next.randomPopDefaultsMigrated = true;
+  }
+  if (source.fixedPopDefaultsMigrated !== true) {
+    next.activitySound = DEFAULT_CONFIG.activitySound;
+    next.activitySounds = { ...DEFAULT_ACTIVITY_SOUNDS };
+    next.fixedPopDefaultsMigrated = true;
   }
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
   next.sound = next.finishSound;
