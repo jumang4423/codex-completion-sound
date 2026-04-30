@@ -2,7 +2,6 @@
  * Completion Sound
  *
  * Plays short native sounds when a Codex task starts, emits activity, and completes.
- * Also adds spring-like motion to newly added assistant activity.
  *
  * Primary detection runs in the main process by tailing Codex session JSONL
  * files for `user_message`, assistant activity, and `task_complete` events.
@@ -34,8 +33,6 @@ const DEFAULT_CONFIG = {
   cooldownMs: 2500,
   activityCooldownMs: 350,
   minBusyMs: 900,
-  motionEnabled: true,
-  motionIntensity: 1.8,
 };
 
 const MAC_SOUNDS = {
@@ -494,9 +491,6 @@ async function startRenderer(api) {
     config: await getConfig(api),
     pageHandle: null,
     observer: null,
-    motionObserver: null,
-    motionStyleEl: null,
-    animatedElements: new WeakSet(),
     messageHandler: null,
     clickHandler: null,
     keyHandler: null,
@@ -510,7 +504,6 @@ async function startRenderer(api) {
   this._state = state;
 
   installRendererDetectors(state);
-  installOrganicMotion(state);
   installSettingsPage(state);
 }
 
@@ -519,11 +512,6 @@ function stopRenderer(state) {
   state.pageHandle = null;
   state.observer?.disconnect?.();
   state.observer = null;
-  state.motionObserver?.disconnect?.();
-  state.motionObserver = null;
-  state.motionStyleEl?.remove?.();
-  state.motionStyleEl = null;
-  document.documentElement.classList.remove("cpp-organic-motion");
   if (state.messageHandler) window.removeEventListener("message", state.messageHandler, true);
   state.messageHandler = null;
   if (state.clickHandler) document.removeEventListener("click", state.clickHandler, true);
@@ -617,197 +605,6 @@ function checkBusyState(state) {
       signalCompletion(state, { source: "renderer-dom" });
     }
   }
-}
-
-function installOrganicMotion(state) {
-  injectMotionStyles(state);
-  const observer = new MutationObserver((mutations) => {
-    if (state.config.motionEnabled === false) return;
-    if (prefersReducedMotion()) return;
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        queueMotionForNode(state, node);
-      }
-    }
-  });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-  state.motionObserver = observer;
-}
-
-function injectMotionStyles(state) {
-  const id = "codex-completion-sound-organic-motion";
-  document.getElementById(id)?.remove?.();
-  const style = document.createElement("style");
-  style.id = id;
-  style.textContent = `
-    .cpp-organic-motion-target {
-      transform-origin: 50% 18%;
-      backface-visibility: hidden;
-      will-change: opacity, transform, filter;
-    }
-    html.cpp-organic-motion button:not(:disabled),
-    html.cpp-organic-motion [role="button"]:not([aria-disabled="true"]) {
-      transition: transform 160ms cubic-bezier(0.2, 0.9, 0.22, 1), filter 160ms ease;
-    }
-    html.cpp-organic-motion button:not(:disabled):active,
-    html.cpp-organic-motion [role="button"]:not([aria-disabled="true"]):active {
-      transform: scale(0.985);
-    }
-  `;
-  document.head.appendChild(style);
-  document.documentElement.classList.add("cpp-organic-motion");
-  state.motionStyleEl = style;
-}
-
-function queueMotionForNode(state, node) {
-  if (!(node instanceof HTMLElement)) return;
-  if (node.closest("#codex-completion-sound-organic-motion")) return;
-  const targets = findMotionTargets(node);
-  for (const target of targets.slice(0, 4)) {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => animateMotionTarget(state, target));
-    });
-  }
-}
-
-function findMotionTargets(root) {
-  if (!(root instanceof HTMLElement)) return [];
-  const direct = motionTargetFromElement(root);
-  if (direct) return [direct];
-
-  const selectors = [
-    "[data-testid*='message' i]",
-    "[data-testid*='response' i]",
-    "[data-testid*='turn' i]",
-    "[data-testid*='tool' i]",
-    "[data-testid*='command' i]",
-    "[data-testid*='reason' i]",
-    "[role='article']",
-    "pre",
-    "blockquote",
-  ].join(",");
-  const matches = [];
-  for (const el of root.querySelectorAll(selectors)) {
-    const target = motionTargetFromElement(el);
-    if (target && !matches.includes(target)) matches.push(target);
-    if (matches.length >= 4) break;
-  }
-  if (matches.length) return matches;
-
-  const generic = motionTargetFromText(root);
-  return generic ? [generic] : [];
-}
-
-function motionTargetFromElement(el) {
-  if (!(el instanceof HTMLElement)) return null;
-  if (shouldIgnoreMotionElement(el)) return null;
-  if (isMotionSemanticElement(el) || isToolActivityText(el)) return el;
-  return null;
-}
-
-function motionTargetFromText(el) {
-  if (!(el instanceof HTMLElement) || shouldIgnoreMotionElement(el)) return null;
-  const text = compactText(el.textContent || "");
-  if (text.length < 18 || text.length > 4000) return null;
-  if (isToolActivityText(el) || isAssistantTextBlock(el, text)) return el;
-  return null;
-}
-
-function isMotionSemanticElement(el) {
-  const text = compactText([
-    el.getAttribute("data-testid"),
-    el.getAttribute("aria-label"),
-    el.getAttribute("class"),
-  ].filter(Boolean).join(" "));
-  return /\b(message|response|turn|assistant|tool|command|reason|transcript|event)\b/i.test(text) ||
-    el.matches("[role='article'],pre,blockquote");
-}
-
-function isToolActivityText(el) {
-  const text = compactText(el.textContent || "");
-  return /^(Ran|Edited|Read|Wrote|Searched|Opened|Created|Updated|Deleted|Patched|Applied|Viewed|Called|Used|Fetched|Listed|Found)\b/i.test(text) ||
-    /\b(ran \d+ commands?|edited \d+ files?|tool_call|function_call)\b/i.test(text);
-}
-
-function isAssistantTextBlock(el, text) {
-  if (el.matches("span,code,em,strong,svg,path,img,input,textarea,select,option,button")) return false;
-  const rect = el.getBoundingClientRect();
-  if (rect.width < 180 || rect.height < 18) return false;
-  if (text.length < 24) return false;
-  return !/^(Settings|Completion Sound|Start Sound|Activity Sound|Finish Sound|Volume|Cooldown|Status)$/i.test(text);
-}
-
-function shouldIgnoreMotionElement(el) {
-  if (!(el instanceof HTMLElement)) return true;
-  if (statefulFormElement(el)) return true;
-  if (el.closest("select,input,textarea,option,script,style")) return true;
-  if (el.closest("#codex-completion-sound-organic-motion")) return true;
-  if (el.closest("[data-cpp-motion-ignore='true']")) return true;
-  if (el.closest("[class*='settings' i]") && !isToolActivityText(el)) return true;
-  return false;
-}
-
-function statefulFormElement(el) {
-  return el.matches("select,input,textarea,option,script,style,svg,path,img");
-}
-
-function animateMotionTarget(state, el) {
-  if (!(el instanceof HTMLElement)) return;
-  if (state.config.motionEnabled === false || prefersReducedMotion()) return;
-  if (state.animatedElements.has(el)) return;
-  if (!isVisible(el)) return;
-
-  state.animatedElements.add(el);
-  el.classList.add("cpp-organic-motion-target");
-  const intensity = clampNumber(state.config.motionIntensity, 0, 3);
-  const distance = 18 + 16 * intensity;
-  const sideways = 3 + 4 * intensity;
-  const overshoot = 1 + 0.018 * intensity;
-  const reboundScale = 1 - 0.006 * intensity;
-  const startScale = 1 - 0.035 * intensity;
-  const startRotate = -0.35 * intensity;
-  const overshootRotate = 0.18 * intensity;
-  const blur = 3 + 2.5 * intensity;
-  const duration = 520 + 130 * intensity;
-  const animation = el.animate([
-    {
-      opacity: 0,
-      transform: `translate3d(${sideways}px, ${distance}px, 0) rotate(${startRotate}deg) scale(${startScale})`,
-      filter: `blur(${blur}px)`,
-      offset: 0,
-      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-    },
-    {
-      opacity: 1,
-      transform: `translate3d(${-1.5 * intensity}px, ${-8 * intensity}px, 0) rotate(${overshootRotate}deg) scale(${overshoot})`,
-      filter: "blur(0)",
-      offset: 0.58,
-      easing: "cubic-bezier(0.34, 1.56, 0.64, 1)",
-    },
-    {
-      opacity: 1,
-      transform: `translate3d(${0.8 * intensity}px, ${2.5 * intensity}px, 0) rotate(${-0.08 * intensity}deg) scale(${reboundScale})`,
-      filter: "blur(0)",
-      offset: 0.78,
-      easing: "cubic-bezier(0.2, 0.9, 0.2, 1)",
-    },
-    {
-      opacity: 1,
-      transform: "translate3d(0, 0, 0) scale(1)",
-      filter: "blur(0)",
-      offset: 1,
-    },
-  ], {
-    duration,
-    fill: "none",
-  });
-  animation.onfinish = animation.oncancel = () => {
-    el.classList.remove("cpp-organic-motion-target");
-  };
-}
-
-function prefersReducedMotion() {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
 }
 
 function detectBusyUi() {
@@ -1135,8 +932,6 @@ function renderSettings(root, state) {
   card.appendChild(toggleRow("Enabled", state.config.enabled, (enabled) => patchConfig(state, { enabled })));
   card.appendChild(toggleRow("Session log monitor", state.config.monitorSessions, (monitorSessions) => patchConfig(state, { monitorSessions })));
   card.appendChild(toggleRow("Renderer fallback", state.config.rendererFallback, (rendererFallback) => patchConfig(state, { rendererFallback })));
-  card.appendChild(toggleRow("Organic motion", state.config.motionEnabled, (motionEnabled) => patchConfig(state, { motionEnabled })));
-  card.appendChild(rangeRow("Motion intensity", state.config.motionIntensity, 0, 3, 0.05, (motionIntensity) => patchConfig(state, { motionIntensity })));
   card.appendChild(selectRow("Start Sound", state.config.startSound, Object.keys(MAC_SOUNDS), (startSound) => patchConfig(state, { startSound })));
   card.appendChild(selectRow("Activity Sound", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
   card.appendChild(selectRow("Finish Sound", state.config.finishSound, Object.keys(MAC_SOUNDS), (finishSound) => patchConfig(state, { finishSound })));
@@ -1355,7 +1150,6 @@ function normalizeConfig(value) {
   next.enabled = next.enabled !== false;
   next.monitorSessions = next.monitorSessions !== false;
   next.rendererFallback = next.rendererFallback !== false;
-  next.motionEnabled = next.motionEnabled !== false;
   next.startSound = isKnownSound(next.startSound) ? next.startSound : DEFAULT_CONFIG.startSound;
   next.activitySound = isKnownSound(next.activitySound) ? next.activitySound : DEFAULT_CONFIG.activitySound;
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
@@ -1364,7 +1158,6 @@ function normalizeConfig(value) {
   next.cooldownMs = clampNumber(next.cooldownMs, 0, 60000);
   next.activityCooldownMs = clampNumber(next.activityCooldownMs, 0, 60000);
   next.minBusyMs = clampNumber(next.minBusyMs, 0, 30000);
-  next.motionIntensity = clampNumber(next.motionIntensity, 0, 3);
   return next;
 }
 
