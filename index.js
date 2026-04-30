@@ -34,7 +34,7 @@ const DEFAULT_CONFIG = {
   activityCooldownMs: 350,
   minBusyMs: 900,
   wideChatEnabled: true,
-  chatMaxWidthRem: 64,
+  chatMaxWidthRem: 88,
 };
 
 const MAC_SOUNDS = {
