@@ -1,11 +1,12 @@
 /**
  * Completion Sound
  *
- * Plays short native sounds when a Codex task starts and completes.
+ * Plays short native sounds when a Codex task starts, emits activity, and completes.
  *
  * Primary detection runs in the main process by tailing Codex session JSONL
- * files for `user_message` and `task_complete` events. Renderer-side UI and
- * message detection is a fallback for app builds that stop writing those events.
+ * files for `user_message`, assistant activity, and `task_complete` events.
+ * Renderer-side UI and message detection is a fallback for app builds that stop
+ * writing those events.
  */
 
 const SERVICE_KEY = "__jumangCompletionSoundService";
@@ -14,6 +15,8 @@ const START_MP3_SOUND = "codex_not_start.mp3";
 const START_MP3_FILE = "assets/codex_not_start.mp3";
 const FINISH_MP3_SOUND = "codex_not_finish.mp3";
 const FINISH_MP3_FILE = "assets/codex_not_finish.mp3";
+const POP_MP3_SOUND = "codex_not_pop.mp3";
+const POP_MP3_FILE = "assets/codex_not_pop.mp3";
 const LEGACY_MP3_SOUND = "codex_not.mp3";
 const LEGACY_MP3_FILE = "assets/codex_not.mp3";
 
@@ -23,14 +26,17 @@ const DEFAULT_CONFIG = {
   rendererFallback: true,
   startSound: START_MP3_SOUND,
   finishSound: FINISH_MP3_SOUND,
+  activitySound: POP_MP3_SOUND,
   volume: 0.45,
   cooldownMs: 2500,
+  activityCooldownMs: 350,
   minBusyMs: 900,
 };
 
 const MAC_SOUNDS = {
   [START_MP3_SOUND]: START_MP3_FILE,
   [FINISH_MP3_SOUND]: FINISH_MP3_FILE,
+  [POP_MP3_SOUND]: POP_MP3_FILE,
   [LEGACY_MP3_SOUND]: LEGACY_MP3_FILE,
   Glass: "/System/Library/Sounds/Glass.aiff",
   Ping: "/System/Library/Sounds/Ping.aiff",
@@ -108,9 +114,11 @@ function createMainService(api) {
   const pending = new Map();
   const seenTurns = new Set();
   const seenUserMessages = new Set();
+  const seenActivity = new Set();
   let timer = null;
   let disposed = false;
   let lastStartPlayedAt = 0;
+  let lastActivityPlayedAt = 0;
   let lastFinishPlayedAt = 0;
   let lastTask = null;
   let lastScanAt = 0;
@@ -125,7 +133,7 @@ function createMainService(api) {
   const service = {
     start() {
       initializeOffsets();
-      timer = setInterval(scan, 1000);
+      timer = setInterval(scan, 500);
       timer.unref?.();
       api.log.info("completion sound monitor active");
     },
@@ -149,8 +157,9 @@ function createMainService(api) {
     status() {
       return {
         lastTask,
-        lastPlayedAt: Math.max(lastStartPlayedAt, lastFinishPlayedAt),
+        lastPlayedAt: Math.max(lastStartPlayedAt, lastActivityPlayedAt, lastFinishPlayedAt),
         lastStartPlayedAt,
+        lastActivityPlayedAt,
         lastFinishPlayedAt,
         lastScanAt,
         watchedFiles: positions.size,
@@ -159,6 +168,7 @@ function createMainService(api) {
     },
 
     play(opts = {}) {
+      if (opts.event === "activity") return playActivity(opts);
       return opts.event === "start" ? playStart(opts) : playCompletion(opts);
     },
   };
@@ -223,7 +233,11 @@ function createMainService(api) {
   }
 
   function handleSessionLine(line, config) {
-    if (!line.includes('"type":"task_complete"') && !line.includes('"type":"user_message"')) return true;
+    if (
+      !line.includes('"type":"task_complete"') &&
+      !line.includes('"type":"user_message"') &&
+      !line.includes('"type":"response_item"')
+    ) return true;
     let row;
     try {
       row = JSON.parse(line);
@@ -232,6 +246,7 @@ function createMainService(api) {
     }
     const payload = row && row.payload;
     if (!payload) return true;
+    if (row.type === "response_item") return handleResponseItem(row, payload, config);
     if (payload.type === "user_message") return handleUserMessage(row, payload, config);
     if (payload.type !== "task_complete") return true;
 
@@ -251,6 +266,31 @@ function createMainService(api) {
 
     if (config.monitorSessions !== false) {
       playCompletion({ source: "session-jsonl", turnId, force: false });
+    }
+    return true;
+  }
+
+  function handleResponseItem(row, payload, config) {
+    if (!isAssistantActivityPayload(payload)) return true;
+
+    const emittedAtMs = eventTimeMs(row);
+    if (emittedAtMs && emittedAtMs < startedAtMs - 3000) return true;
+
+    const key = activityKey(row, payload);
+    if (seenActivity.has(key)) return true;
+    seenActivity.add(key);
+
+    lastTask = {
+      at: Date.now(),
+      activityAtMs: emittedAtMs,
+      source: "session-jsonl",
+      event: "assistant-activity",
+      itemType: payload.type || null,
+      phase: payload.phase || null,
+    };
+
+    if (config.monitorSessions !== false) {
+      playActivity({ source: `session-${payload.type || "response-item"}`, force: false });
     }
     return true;
   }
@@ -285,6 +325,10 @@ function createMainService(api) {
     return playConfiguredSound("start", opts);
   }
 
+  function playActivity(opts = {}) {
+    return playConfiguredSound("activity", opts);
+  }
+
   function playCompletion(opts = {}) {
     return playConfiguredSound("finish", opts);
   }
@@ -294,18 +338,30 @@ function createMainService(api) {
     if (config.enabled === false && !opts.force) return { played: false, reason: "disabled" };
 
     const now = Date.now();
-    const cooldown = clampNumber(config.cooldownMs, 0, 60000);
-    const lastPlayedAt = kind === "start" ? lastStartPlayedAt : lastFinishPlayedAt;
+    const cooldown = kind === "activity"
+      ? clampNumber(config.activityCooldownMs, 0, 60000)
+      : clampNumber(config.cooldownMs, 0, 60000);
+    const lastPlayedAt = kind === "start"
+      ? lastStartPlayedAt
+      : kind === "activity"
+        ? lastActivityPlayedAt
+        : lastFinishPlayedAt;
     if (!opts.force && now - lastPlayedAt < cooldown) {
       return { played: false, reason: "cooldown" };
     }
     if (kind === "start") lastStartPlayedAt = now;
+    else if (kind === "activity") lastActivityPlayedAt = now;
     else lastFinishPlayedAt = now;
 
     const volume = clampNumber(config.volume, 0, 1);
-    const sound = kind === "start" ? config.startSound : config.finishSound;
+    const sound = kind === "start"
+      ? config.startSound
+      : kind === "activity"
+        ? config.activitySound
+        : config.finishSound;
     const result = playNativeSound(sound, volume);
-    api.log.info(kind === "start" ? "start sound" : "completion sound", {
+    const label = kind === "start" ? "start sound" : kind === "activity" ? "activity sound" : "completion sound";
+    api.log.info(label, {
       source: opts.source || "manual",
       sound,
       played: result.played,
@@ -390,6 +446,39 @@ function eventTimeMs(row) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isAssistantActivityPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const type = typeof payload.type === "string" ? payload.type : "";
+  const role = typeof payload.role === "string" ? payload.role : "";
+  if (role === "user" || role === "system") return false;
+  if (type === "message") return !role || role === "assistant";
+  return /^(function_call|function_call_output|reasoning|tool_call|web_search_call|computer_call|local_shell_call)$/.test(type) ||
+    /(assistant|response|output|call|tool|reason|move)/i.test(type);
+}
+
+function activityKey(row, payload) {
+  return [
+    row.timestamp || "",
+    payload.type || "",
+    payload.role || "",
+    payload.phase || "",
+    payload.id || payload.call_id || payload.item_id || "",
+    activityFingerprint(payload),
+  ].join("\n");
+}
+
+function activityFingerprint(payload) {
+  const content = payload.content;
+  if (typeof content === "string") return content.slice(0, 160);
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (!item || typeof item !== "object") return "";
+      return String(item.text || item.input || item.output || item.type || "");
+    }).join("|").slice(0, 160);
+  }
+  return String(payload.name || payload.status || payload.summary || "").slice(0, 160);
+}
+
 // --------------------------------------------------------------- renderer --
 
 async function startRenderer(api) {
@@ -455,6 +544,8 @@ function installRendererDetectors(state) {
     if (state.config.rendererFallback === false) return;
     const startSignal = findStartSignal(event.data);
     if (startSignal) signalStart(state, startSignal);
+    const activitySignal = findActivitySignal(event.data);
+    if (activitySignal) signalActivity(state, activitySignal);
     const signal = findCompletionSignal(event.data);
     if (signal) signalCompletion(state, signal);
   };
@@ -635,6 +726,34 @@ function findStartSignal(value) {
   return null;
 }
 
+function findActivitySignal(value) {
+  const seen = new Set();
+  const stack = [{ value, depth: 0 }];
+  while (stack.length) {
+    const item = stack.pop();
+    const v = item.value;
+    if (!v || typeof v !== "object" || seen.has(v) || item.depth > 5) continue;
+    seen.add(v);
+
+    const type = typeof v.type === "string" ? v.type : "";
+    const method = typeof v.method === "string" ? v.method : "";
+    const payload = v.payload || v.item || v.output_item || v.response_item || v.message;
+    if ((type === "response_item" || /output[_/-]?item/i.test(type) || /response[_/-]?item/i.test(type)) && isAssistantActivityPayload(payload)) {
+      return { source: `message-${type || "response-item"}` };
+    }
+    if (/response[./_-]?(output|content|item)[./_-]?(added|done|delta)/i.test(type || method)) {
+      return { source: `message-${type || method}` };
+    }
+
+    for (const key of ["payload", "params", "event", "notification", "message", "data", "item", "output_item"]) {
+      if (v[key] && typeof v[key] === "object") {
+        stack.push({ value: v[key], depth: item.depth + 1 });
+      }
+    }
+  }
+  return null;
+}
+
 function findCompletionSignal(value) {
   const seen = new Set();
   const stack = [{ value, depth: 0 }];
@@ -671,7 +790,7 @@ async function signalStart(state, signal) {
       event: "start",
       source: signal.source || "renderer",
     });
-    if (!result || result.played === false) {
+    if (shouldUseRendererFallback(result)) {
       playWebAudioFallback(state, "start");
     }
   } catch (error) {
@@ -680,21 +799,45 @@ async function signalStart(state, signal) {
   }
 }
 
+async function signalActivity(state, signal) {
+  if (state.config.enabled === false) return;
+  setLastSignal(state, "activity", signal.source || "renderer");
+  try {
+    const result = await state.api.ipc.invoke("play", {
+      event: "activity",
+      source: signal.source || "renderer",
+    });
+    if (shouldUseRendererFallback(result)) {
+      playWebAudioFallback(state, "activity");
+    }
+  } catch (error) {
+    state.api.log.warn("main activity sound invoke failed; using renderer fallback", error);
+    playWebAudioFallback(state, "activity");
+  }
+}
+
 async function signalCompletion(state, signal) {
   if (state.config.enabled === false) return;
+  if (state.config.monitorSessions !== false && signal.source === "renderer-dom") return;
   setLastSignal(state, "completed", signal.source || "renderer");
   try {
     const result = await state.api.ipc.invoke("play", {
       event: "finish",
       source: signal.source || "renderer",
     });
-    if (!result || result.played === false) {
+    if (shouldUseRendererFallback(result)) {
       playWebAudioFallback(state, "finish");
     }
   } catch (error) {
     state.api.log.warn("main sound invoke failed; using renderer fallback", error);
     playWebAudioFallback(state, "finish");
   }
+}
+
+function shouldUseRendererFallback(result) {
+  if (!result) return true;
+  if (result.played !== false) return false;
+  return result.reason !== "cooldown" && result.reason !== "disabled";
 }
 
 function playWebAudioFallback(state, kind = "finish") {
@@ -710,6 +853,8 @@ function playWebAudioFallback(state, kind = "finish") {
     if (kind === "start") {
       beep(ctx, now, 660, 0.08, volume);
       beep(ctx, now + 0.09, 880, 0.1, volume);
+    } else if (kind === "activity") {
+      beep(ctx, now, 990, 0.055, volume);
     } else {
       beep(ctx, now, 880, 0.09, volume);
       beep(ctx, now + 0.11, 1175, 0.12, volume);
@@ -756,7 +901,7 @@ function installSettingsPage(state) {
     state.pageHandle = state.api.settings.registerPage({
       id: "main",
       title: "Completion Sound",
-      description: "Play sounds when a Codex turn starts and finishes.",
+      description: "Play sounds when a Codex turn starts, moves, and finishes.",
       iconSvg:
         '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="icon-sm inline-block align-middle" aria-hidden="true">' +
         '<path d="M5 8v4h3l4 3V5L8 8H5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>' +
@@ -768,7 +913,7 @@ function installSettingsPage(state) {
     state.pageHandle = state.api.settings.register({
       id: "main",
       title: "Completion Sound",
-      description: "Play sounds when a Codex turn starts and finishes.",
+      description: "Play sounds when a Codex turn starts, moves, and finishes.",
       render,
     });
   }
@@ -785,11 +930,15 @@ function renderSettings(root, state) {
   card.appendChild(toggleRow("Session log monitor", state.config.monitorSessions, (monitorSessions) => patchConfig(state, { monitorSessions })));
   card.appendChild(toggleRow("Renderer fallback", state.config.rendererFallback, (rendererFallback) => patchConfig(state, { rendererFallback })));
   card.appendChild(selectRow("Start Sound", state.config.startSound, Object.keys(MAC_SOUNDS), (startSound) => patchConfig(state, { startSound })));
+  card.appendChild(selectRow("Activity Sound", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
   card.appendChild(selectRow("Finish Sound", state.config.finishSound, Object.keys(MAC_SOUNDS), (finishSound) => patchConfig(state, { finishSound })));
   card.appendChild(rangeRow("Volume", state.config.volume, 0, 1, 0.05, (volume) => patchConfig(state, { volume })));
   card.appendChild(numberRow("Cooldown", Math.round(state.config.cooldownMs / 1000), "s", (seconds) => {
     return patchConfig(state, { cooldownMs: clampNumber(seconds, 0, 60) * 1000 });
   }));
+  card.appendChild(numberRow("Activity cooldown", state.config.activityCooldownMs, "ms", (ms) => {
+    return patchConfig(state, { activityCooldownMs: clampNumber(ms, 0, 5000) });
+  }, { max: 5000, step: 50 }));
 
   const test = rowShell("Test", "Play each sound now.");
   const startBtn = button("Test Start");
@@ -812,7 +961,17 @@ function renderSettings(root, state) {
       finishBtn.disabled = false;
     }
   });
-  test.right.append(startBtn, finishBtn);
+  const activityBtn = button("Test Pop");
+  activityBtn.addEventListener("click", async () => {
+    activityBtn.disabled = true;
+    try {
+      await state.api.ipc.invoke("play", { event: "activity", source: "settings-test-activity", force: true });
+      setLastSignal(state, "tested activity", "settings");
+    } finally {
+      activityBtn.disabled = false;
+    }
+  });
+  test.right.append(startBtn, activityBtn, finishBtn);
   card.appendChild(test.row);
 
   const status = rowShell("Status", "");
@@ -870,13 +1029,13 @@ function rangeRow(label, value, min, max, step, onChange) {
   return parts.row;
 }
 
-function numberRow(label, value, suffix, onChange) {
+function numberRow(label, value, suffix, onChange, opts = {}) {
   const parts = rowShell(label, "");
   const input = document.createElement("input");
   input.type = "number";
-  input.min = "0";
-  input.max = "60";
-  input.step = "1";
+  input.min = String(opts.min ?? 0);
+  input.max = String(opts.max ?? 60);
+  input.step = String(opts.step ?? 1);
   input.value = String(value);
   input.className =
     "h-token-button-composer w-20 rounded-md border border-token-border bg-token-foreground/5 " +
@@ -989,10 +1148,12 @@ function normalizeConfig(value) {
   next.monitorSessions = next.monitorSessions !== false;
   next.rendererFallback = next.rendererFallback !== false;
   next.startSound = isKnownSound(next.startSound) ? next.startSound : DEFAULT_CONFIG.startSound;
+  next.activitySound = isKnownSound(next.activitySound) ? next.activitySound : DEFAULT_CONFIG.activitySound;
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
   next.sound = next.finishSound;
   next.volume = clampNumber(next.volume, 0, 1);
   next.cooldownMs = clampNumber(next.cooldownMs, 0, 60000);
+  next.activityCooldownMs = clampNumber(next.activityCooldownMs, 0, 60000);
   next.minBusyMs = clampNumber(next.minBusyMs, 0, 30000);
   return next;
 }

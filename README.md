@@ -1,10 +1,11 @@
 # Codex Completion Sound
 
-A Codex++ tweak that plays a custom sound when a Codex turn starts and another sound when it finishes.
+A Codex++ tweak that plays custom sounds when a Codex turn starts, emits activity, and finishes.
 
 ## Sounds
 
 - Start: `assets/codex_not_start.mp3`
+- Activity: `assets/codex_not_pop.mp3`
 - Finish: `assets/codex_not_finish.mp3`
 
 The tweak also keeps `assets/codex_not.mp3` as a legacy option.
@@ -31,7 +32,7 @@ Windows:
 Copy-Item -Recurse codex-completion-sound "$env:APPDATA\\codex-plusplus\\tweaks\\com.jumang.completion-sound"
 ```
 
-Open `Settings -> Tweaks -> Completion Sound` to choose sounds, adjust volume, and test playback.
+Open `Settings -> Tweaks -> Completion Sound` to choose sounds, adjust volume, tune the activity cooldown, and test playback.
 
 ## Requirements
 
