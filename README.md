@@ -5,10 +5,10 @@ A Codex++ tweak that plays custom sounds when a Codex turn starts, emits activit
 ## Sounds
 
 - Start: `assets/codex_not_start.mp3`
-- Activity: `assets/codex_not_pop.mp3`
+- Activity: `assets/codex_not_pop.aiff`
 - Finish: `assets/codex_not_finish.mp3`
 
-The tweak also keeps `assets/codex_not.mp3` as a legacy option.
+The tweak also keeps `assets/codex_not.mp3` and `assets/codex_not_pop.mp3` as legacy options.
 
 ## Install
 

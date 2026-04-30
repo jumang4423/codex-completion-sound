@@ -15,6 +15,8 @@ const START_MP3_SOUND = "codex_not_start.mp3";
 const START_MP3_FILE = "assets/codex_not_start.mp3";
 const FINISH_MP3_SOUND = "codex_not_finish.mp3";
 const FINISH_MP3_FILE = "assets/codex_not_finish.mp3";
+const POP_AIFF_SOUND = "codex_not_pop.aiff";
+const POP_AIFF_FILE = "assets/codex_not_pop.aiff";
 const POP_MP3_SOUND = "codex_not_pop.mp3";
 const POP_MP3_FILE = "assets/codex_not_pop.mp3";
 const LEGACY_MP3_SOUND = "codex_not.mp3";
@@ -26,7 +28,7 @@ const DEFAULT_CONFIG = {
   rendererFallback: true,
   startSound: START_MP3_SOUND,
   finishSound: FINISH_MP3_SOUND,
-  activitySound: POP_MP3_SOUND,
+  activitySound: POP_AIFF_SOUND,
   volume: 0.45,
   cooldownMs: 2500,
   activityCooldownMs: 350,
@@ -36,6 +38,7 @@ const DEFAULT_CONFIG = {
 const MAC_SOUNDS = {
   [START_MP3_SOUND]: START_MP3_FILE,
   [FINISH_MP3_SOUND]: FINISH_MP3_FILE,
+  [POP_AIFF_SOUND]: POP_AIFF_FILE,
   [POP_MP3_SOUND]: POP_MP3_FILE,
   [LEGACY_MP3_SOUND]: LEGACY_MP3_FILE,
   Glass: "/System/Library/Sounds/Glass.aiff",
