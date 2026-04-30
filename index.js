@@ -33,6 +33,8 @@ const DEFAULT_CONFIG = {
   cooldownMs: 2500,
   activityCooldownMs: 350,
   minBusyMs: 900,
+  wideChatEnabled: true,
+  chatMaxWidthRem: 64,
 };
 
 const MAC_SOUNDS = {
@@ -490,6 +492,7 @@ async function startRenderer(api) {
     api,
     config: await getConfig(api),
     pageHandle: null,
+    layoutStyleEl: null,
     observer: null,
     messageHandler: null,
     clickHandler: null,
@@ -503,6 +506,7 @@ async function startRenderer(api) {
   };
   this._state = state;
 
+  installLayoutTweaks(state);
   installRendererDetectors(state);
   installSettingsPage(state);
 }
@@ -510,6 +514,8 @@ async function startRenderer(api) {
 function stopRenderer(state) {
   state.pageHandle?.unregister?.();
   state.pageHandle = null;
+  state.layoutStyleEl?.remove?.();
+  state.layoutStyleEl = null;
   state.observer?.disconnect?.();
   state.observer = null;
   if (state.messageHandler) window.removeEventListener("message", state.messageHandler, true);
@@ -538,8 +544,31 @@ async function patchConfig(state, patch) {
     state.api.log.warn("set-config failed", error);
     state.config = normalizeConfig({ ...state.config, ...patch });
   }
+  updateLayoutTweaks(state);
   updateStatus(state);
   return state.config;
+}
+
+function installLayoutTweaks(state) {
+  const style = document.createElement("style");
+  style.id = "codex-completion-sound-layout";
+  document.head.appendChild(style);
+  state.layoutStyleEl = style;
+  updateLayoutTweaks(state);
+}
+
+function updateLayoutTweaks(state) {
+  if (!state.layoutStyleEl) return;
+  if (state.config.wideChatEnabled === false) {
+    state.layoutStyleEl.textContent = "";
+    return;
+  }
+  const width = clampNumber(state.config.chatMaxWidthRem, 32, 96);
+  state.layoutStyleEl.textContent = `
+    [data-codex-window-type="electron"] body {
+      --thread-content-max-width: ${width}rem !important;
+    }
+  `;
 }
 
 function installRendererDetectors(state) {
@@ -932,6 +961,10 @@ function renderSettings(root, state) {
   card.appendChild(toggleRow("Enabled", state.config.enabled, (enabled) => patchConfig(state, { enabled })));
   card.appendChild(toggleRow("Session log monitor", state.config.monitorSessions, (monitorSessions) => patchConfig(state, { monitorSessions })));
   card.appendChild(toggleRow("Renderer fallback", state.config.rendererFallback, (rendererFallback) => patchConfig(state, { rendererFallback })));
+  card.appendChild(toggleRow("Wide chat", state.config.wideChatEnabled, (wideChatEnabled) => patchConfig(state, { wideChatEnabled })));
+  card.appendChild(numberRow("Chat max width", state.config.chatMaxWidthRem, "rem", (rem) => {
+    return patchConfig(state, { chatMaxWidthRem: clampNumber(rem, 32, 96) });
+  }, { min: 32, max: 96, step: 2 }));
   card.appendChild(selectRow("Start Sound", state.config.startSound, Object.keys(MAC_SOUNDS), (startSound) => patchConfig(state, { startSound })));
   card.appendChild(selectRow("Activity Sound", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
   card.appendChild(selectRow("Finish Sound", state.config.finishSound, Object.keys(MAC_SOUNDS), (finishSound) => patchConfig(state, { finishSound })));
@@ -1150,6 +1183,7 @@ function normalizeConfig(value) {
   next.enabled = next.enabled !== false;
   next.monitorSessions = next.monitorSessions !== false;
   next.rendererFallback = next.rendererFallback !== false;
+  next.wideChatEnabled = next.wideChatEnabled !== false;
   next.startSound = isKnownSound(next.startSound) ? next.startSound : DEFAULT_CONFIG.startSound;
   next.activitySound = isKnownSound(next.activitySound) ? next.activitySound : DEFAULT_CONFIG.activitySound;
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
@@ -1158,6 +1192,7 @@ function normalizeConfig(value) {
   next.cooldownMs = clampNumber(next.cooldownMs, 0, 60000);
   next.activityCooldownMs = clampNumber(next.activityCooldownMs, 0, 60000);
   next.minBusyMs = clampNumber(next.minBusyMs, 0, 30000);
+  next.chatMaxWidthRem = clampNumber(next.chatMaxWidthRem, 32, 96);
   return next;
 }
 

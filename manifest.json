@@ -1,9 +1,9 @@
 {
   "id": "com.jumang.completion-sound",
   "name": "Completion Sound",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "githubRepo": "jumang4423/codex-completion-sound",
-  "description": "Plays sounds when a Codex turn starts, moves, and finishes.",
+  "description": "Plays Codex activity sounds and widens the chat column.",
   "author": {
     "name": "jumang4423"
   },
