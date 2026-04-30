@@ -17,10 +17,30 @@ const FINISH_MP3_SOUND = "codex_not_finish.mp3";
 const FINISH_MP3_FILE = "assets/codex_not_finish.mp3";
 const POP_AIFF_SOUND = "codex_not_pop.aiff";
 const POP_AIFF_FILE = "assets/codex_not_pop.aiff";
-const POP_MP3_SOUND = "codex_not_pop.mp3";
-const POP_MP3_FILE = "assets/codex_not_pop.mp3";
+const POP2_MP3_SOUND = "codex_not_pop2.mp3";
+const POP2_MP3_FILE = "assets/codex_not_pop2.mp3";
+const POP3_MP3_SOUND = "codex_not_pop3.mp3";
+const POP3_MP3_FILE = "assets/codex_not_pop3.mp3";
+const POP4_MP3_SOUND = "codex_not_pop4.mp3";
+const POP4_MP3_FILE = "assets/codex_not_pop4.mp3";
+const POP5_MP3_SOUND = "codex_not_pop5.mp3";
+const POP5_MP3_FILE = "assets/codex_not_pop5.mp3";
+const POP6_MP3_SOUND = "codex_not_pop6.mp3";
+const POP6_MP3_FILE = "assets/codex_not_pop6.mp3";
+const POP7_MP3_SOUND = "codex_not_pop7.mp3";
+const POP7_MP3_FILE = "assets/codex_not_pop7.mp3";
+const RANDOM_POP_SOUND = "Random pop";
 const LEGACY_MP3_SOUND = "codex_not.mp3";
 const LEGACY_MP3_FILE = "assets/codex_not.mp3";
+const POP_SOUND_CHOICES = [
+  POP_AIFF_SOUND,
+  POP2_MP3_SOUND,
+  POP3_MP3_SOUND,
+  POP4_MP3_SOUND,
+  POP5_MP3_SOUND,
+  POP6_MP3_SOUND,
+  POP7_MP3_SOUND,
+];
 const ACTIVITY_SOUND_KEYS = [
   "reasoning",
   "message",
@@ -35,7 +55,7 @@ const ACTIVITY_SOUND_KEYS = [
   "response_item",
 ];
 const DEFAULT_ACTIVITY_SOUNDS = Object.fromEntries(
-  ACTIVITY_SOUND_KEYS.map((key) => [key, POP_MP3_SOUND]),
+  ACTIVITY_SOUND_KEYS.map((key) => [key, RANDOM_POP_SOUND]),
 );
 
 const DEFAULT_CONFIG = {
@@ -44,7 +64,7 @@ const DEFAULT_CONFIG = {
   rendererFallback: true,
   startSound: START_MP3_SOUND,
   finishSound: FINISH_MP3_SOUND,
-  activitySound: POP_MP3_SOUND,
+  activitySound: RANDOM_POP_SOUND,
   activitySounds: DEFAULT_ACTIVITY_SOUNDS,
   volume: 0.45,
   cooldownMs: 2500,
@@ -52,13 +72,20 @@ const DEFAULT_CONFIG = {
   minBusyMs: 900,
   wideChatEnabled: true,
   chatMaxWidthRem: 88,
+  randomPopDefaultsMigrated: true,
 };
 
 const MAC_SOUNDS = {
   [START_MP3_SOUND]: START_MP3_FILE,
   [FINISH_MP3_SOUND]: FINISH_MP3_FILE,
+  [RANDOM_POP_SOUND]: RANDOM_POP_SOUND,
   [POP_AIFF_SOUND]: POP_AIFF_FILE,
-  [POP_MP3_SOUND]: POP_MP3_FILE,
+  [POP2_MP3_SOUND]: POP2_MP3_FILE,
+  [POP3_MP3_SOUND]: POP3_MP3_FILE,
+  [POP4_MP3_SOUND]: POP4_MP3_FILE,
+  [POP5_MP3_SOUND]: POP5_MP3_FILE,
+  [POP6_MP3_SOUND]: POP6_MP3_FILE,
+  [POP7_MP3_SOUND]: POP7_MP3_FILE,
   [LEGACY_MP3_SOUND]: LEGACY_MP3_FILE,
   Glass: "/System/Library/Sounds/Glass.aiff",
   Ping: "/System/Library/Sounds/Ping.aiff",
@@ -391,6 +418,7 @@ function createMainService(api) {
       source: opts.source || "manual",
       activityType: kind === "activity" ? normalizeActivityType(opts.activityType) : null,
       sound,
+      resolvedSound: result.sound || null,
       played: result.played,
       reason: result.reason || null,
     });
@@ -400,18 +428,19 @@ function createMainService(api) {
   function playNativeSound(soundName, volume) {
     try {
       if (process.platform === "darwin") {
-        const configuredFile = MAC_SOUNDS[soundName] || MAC_SOUNDS[DEFAULT_CONFIG.finishSound] || MAC_SOUNDS.Glass;
+        const resolvedSound = soundName === RANDOM_POP_SOUND ? randomPopSound() : soundName;
+        const configuredFile = MAC_SOUNDS[resolvedSound] || MAC_SOUNDS[DEFAULT_CONFIG.finishSound] || MAC_SOUNDS.Glass;
         const file = path.isAbsolute(configuredFile)
           ? configuredFile
           : path.join(__dirname, configuredFile);
-        if (!fs.existsSync(file)) return { played: false, reason: "sound-file-missing" };
+        if (!fs.existsSync(file)) return { played: false, reason: "sound-file-missing", sound: resolvedSound };
         const child = childProcess.spawn(
           "/usr/bin/afplay",
           ["-v", String(volume), file],
           { detached: true, stdio: "ignore" },
         );
         child.unref?.();
-        return { played: true, method: "afplay" };
+        return { played: true, method: "afplay", sound: resolvedSound };
       }
 
       if (process.platform === "win32") {
@@ -459,6 +488,10 @@ function createMainService(api) {
       else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push(full);
     }
   }
+}
+
+function randomPopSound() {
+  return POP_SOUND_CHOICES[Math.floor(Math.random() * POP_SOUND_CHOICES.length)] || POP_AIFF_SOUND;
 }
 
 function completionTimeMs(row, payload) {
@@ -1246,6 +1279,11 @@ function normalizeConfig(value) {
   next.startSound = isKnownSound(next.startSound) ? next.startSound : DEFAULT_CONFIG.startSound;
   next.activitySound = isKnownSound(next.activitySound) ? next.activitySound : DEFAULT_CONFIG.activitySound;
   next.activitySounds = normalizeActivitySounds(next.activitySounds, next.activitySound);
+  if (source.randomPopDefaultsMigrated !== true) {
+    next.activitySound = isOldDefaultPopSound(next.activitySound) ? RANDOM_POP_SOUND : next.activitySound;
+    next.activitySounds = migrateOldDefaultPopSounds(next.activitySounds);
+    next.randomPopDefaultsMigrated = true;
+  }
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
   next.sound = next.finishSound;
   next.volume = clampNumber(next.volume, 0, 1);
@@ -1272,6 +1310,18 @@ function normalizeActivitySounds(value, fallback) {
         : fallback;
   }
   return out;
+}
+
+function migrateOldDefaultPopSounds(activitySounds) {
+  const out = { ...activitySounds };
+  for (const key of ACTIVITY_SOUND_KEYS) {
+    if (isOldDefaultPopSound(out[key])) out[key] = RANDOM_POP_SOUND;
+  }
+  return out;
+}
+
+function isOldDefaultPopSound(sound) {
+  return sound === POP_AIFF_SOUND || sound === "codex_not_pop.mp3";
 }
 
 function isPlainObject(value) {
