@@ -1,9 +1,9 @@
 {
   "id": "com.jumang.completion-sound",
   "name": "Completion Sound",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "githubRepo": "jumang4423/codex-completion-sound",
-  "description": "Plays sounds and highlights long-running task rows.",
+  "description": "Plays sounds when a Codex turn starts, moves, and finishes.",
   "author": {
     "name": "jumang4423"
   },
