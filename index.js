@@ -31,7 +31,7 @@ const DEFAULT_CONFIG = {
   activitySound: POP_AIFF_SOUND,
   volume: 0.45,
   cooldownMs: 2500,
-  activityCooldownMs: 350,
+  activityCooldownMs: 50,
   minBusyMs: 900,
   wideChatEnabled: true,
   chatMaxWidthRem: 88,

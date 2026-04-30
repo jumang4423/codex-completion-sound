@@ -1,7 +1,7 @@
 {
   "id": "com.jumang.completion-sound",
   "name": "Completion Sound",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "githubRepo": "jumang4423/codex-completion-sound",
   "description": "Plays Codex activity sounds and widens the chat column.",
   "author": {
