@@ -21,6 +21,22 @@ const POP_MP3_SOUND = "codex_not_pop.mp3";
 const POP_MP3_FILE = "assets/codex_not_pop.mp3";
 const LEGACY_MP3_SOUND = "codex_not.mp3";
 const LEGACY_MP3_FILE = "assets/codex_not.mp3";
+const ACTIVITY_SOUND_KEYS = [
+  "reasoning",
+  "message",
+  "function_call",
+  "function_call_output",
+  "tool_call",
+  "custom_tool_call",
+  "custom_tool_call_output",
+  "local_shell_call",
+  "web_search_call",
+  "computer_call",
+  "response_item",
+];
+const DEFAULT_ACTIVITY_SOUNDS = Object.fromEntries(
+  ACTIVITY_SOUND_KEYS.map((key) => [key, POP_MP3_SOUND]),
+);
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -28,7 +44,8 @@ const DEFAULT_CONFIG = {
   rendererFallback: true,
   startSound: START_MP3_SOUND,
   finishSound: FINISH_MP3_SOUND,
-  activitySound: POP_AIFF_SOUND,
+  activitySound: POP_MP3_SOUND,
+  activitySounds: DEFAULT_ACTIVITY_SOUNDS,
   volume: 0.45,
   cooldownMs: 2500,
   activityCooldownMs: 50,
@@ -295,7 +312,11 @@ function createMainService(api) {
     };
 
     if (config.monitorSessions !== false) {
-      playActivity({ source: `session-${payload.type || "response-item"}`, force: false });
+      playActivity({
+        source: `session-${payload.type || "response-item"}`,
+        activityType: normalizeActivityType(payload.type),
+        force: false,
+      });
     }
     return true;
   }
@@ -362,12 +383,13 @@ function createMainService(api) {
     const sound = kind === "start"
       ? config.startSound
       : kind === "activity"
-        ? config.activitySound
+        ? activitySoundFor(config, opts.activityType)
         : config.finishSound;
     const result = playNativeSound(sound, volume);
     const label = kind === "start" ? "start sound" : kind === "activity" ? "activity sound" : "completion sound";
     api.log.info(label, {
       source: opts.source || "manual",
+      activityType: kind === "activity" ? normalizeActivityType(opts.activityType) : null,
       sound,
       played: result.played,
       reason: result.reason || null,
@@ -459,6 +481,30 @@ function isAssistantActivityPayload(payload) {
   if (type === "message") return !role || role === "assistant";
   return /^(function_call|function_call_output|reasoning|tool_call|web_search_call|computer_call|local_shell_call)$/.test(type) ||
     /(assistant|response|output|call|tool|reason|move)/i.test(type);
+}
+
+function normalizeActivityType(type) {
+  const raw = typeof type === "string" ? type : "";
+  const normalized = raw.trim().replace(/[-/ .]+/g, "_").toLowerCase();
+  if (ACTIVITY_SOUND_KEYS.includes(normalized)) return normalized;
+  if (normalized.includes("reason")) return "reasoning";
+  if (normalized.includes("message")) return "message";
+  if (normalized.includes("function_call_output")) return "function_call_output";
+  if (normalized.includes("function_call")) return "function_call";
+  if (normalized.includes("custom_tool_call_output")) return "custom_tool_call_output";
+  if (normalized.includes("custom_tool_call")) return "custom_tool_call";
+  if (normalized.includes("local_shell")) return "local_shell_call";
+  if (normalized.includes("web_search")) return "web_search_call";
+  if (normalized.includes("computer")) return "computer_call";
+  if (normalized.includes("tool")) return "tool_call";
+  return "response_item";
+}
+
+function activitySoundFor(config, activityType) {
+  const key = normalizeActivityType(activityType);
+  const sound = config.activitySounds?.[key];
+  if (isKnownSound(sound)) return sound;
+  return isKnownSound(config.activitySound) ? config.activitySound : DEFAULT_CONFIG.activitySound;
 }
 
 function activityKey(row, payload) {
@@ -771,10 +817,13 @@ function findActivitySignal(value) {
     const method = typeof v.method === "string" ? v.method : "";
     const payload = v.payload || v.item || v.output_item || v.response_item || v.message;
     if ((type === "response_item" || /output[_/-]?item/i.test(type) || /response[_/-]?item/i.test(type)) && isAssistantActivityPayload(payload)) {
-      return { source: `message-${type || "response-item"}` };
+      return {
+        source: `message-${type || "response-item"}`,
+        activityType: normalizeActivityType(payload?.type),
+      };
     }
     if (/response[./_-]?(output|content|item)[./_-]?(added|done|delta)/i.test(type || method)) {
-      return { source: `message-${type || method}` };
+      return { source: `message-${type || method}`, activityType: "message" };
     }
 
     for (const key of ["payload", "params", "event", "notification", "message", "data", "item", "output_item"]) {
@@ -838,6 +887,7 @@ async function signalActivity(state, signal) {
     const result = await state.api.ipc.invoke("play", {
       event: "activity",
       source: signal.source || "renderer",
+      activityType: signal.activityType || "response_item",
     });
     if (shouldUseRendererFallback(result)) {
       playWebAudioFallback(state, "activity");
@@ -966,8 +1016,13 @@ function renderSettings(root, state) {
     return patchConfig(state, { chatMaxWidthRem: clampNumber(rem, 32, 96) });
   }, { min: 32, max: 96, step: 2 }));
   card.appendChild(selectRow("Start Sound", state.config.startSound, Object.keys(MAC_SOUNDS), (startSound) => patchConfig(state, { startSound })));
-  card.appendChild(selectRow("Activity Sound", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
   card.appendChild(selectRow("Finish Sound", state.config.finishSound, Object.keys(MAC_SOUNDS), (finishSound) => patchConfig(state, { finishSound })));
+  card.appendChild(selectRow("Activity fallback", state.config.activitySound, Object.keys(MAC_SOUNDS), (activitySound) => patchConfig(state, { activitySound })));
+  for (const key of ACTIVITY_SOUND_KEYS) {
+    card.appendChild(selectRow(activitySoundLabel(key), state.config.activitySounds[key], Object.keys(MAC_SOUNDS), (sound) => {
+      return patchConfig(state, { activitySounds: { ...state.config.activitySounds, [key]: sound } });
+    }));
+  }
   card.appendChild(rangeRow("Volume", state.config.volume, 0, 1, 0.05, (volume) => patchConfig(state, { volume })));
   card.appendChild(numberRow("Cooldown", Math.round(state.config.cooldownMs / 1000), "s", (seconds) => {
     return patchConfig(state, { cooldownMs: clampNumber(seconds, 0, 60) * 1000 });
@@ -1043,6 +1098,10 @@ function selectRow(label, value, options, onChange) {
   select.addEventListener("change", () => onChange(select.value));
   parts.right.appendChild(select);
   return parts.row;
+}
+
+function activitySoundLabel(key) {
+  return `Activity: ${key.split("_").join(" ")}`;
 }
 
 function rangeRow(label, value, min, max, step, onChange) {
@@ -1186,6 +1245,7 @@ function normalizeConfig(value) {
   next.wideChatEnabled = next.wideChatEnabled !== false;
   next.startSound = isKnownSound(next.startSound) ? next.startSound : DEFAULT_CONFIG.startSound;
   next.activitySound = isKnownSound(next.activitySound) ? next.activitySound : DEFAULT_CONFIG.activitySound;
+  next.activitySounds = normalizeActivitySounds(next.activitySounds, next.activitySound);
   next.finishSound = isKnownSound(next.finishSound) ? next.finishSound : DEFAULT_CONFIG.finishSound;
   next.sound = next.finishSound;
   next.volume = clampNumber(next.volume, 0, 1);
@@ -1198,6 +1258,20 @@ function normalizeConfig(value) {
 
 function isKnownSound(sound) {
   return Object.prototype.hasOwnProperty.call(MAC_SOUNDS, sound);
+}
+
+function normalizeActivitySounds(value, fallback) {
+  const source = isPlainObject(value) ? value : {};
+  const out = {};
+  for (const key of ACTIVITY_SOUND_KEYS) {
+    const sound = source[key];
+    out[key] = isKnownSound(sound)
+      ? sound
+      : isKnownSound(DEFAULT_ACTIVITY_SOUNDS[key])
+        ? DEFAULT_ACTIVITY_SOUNDS[key]
+        : fallback;
+  }
+  return out;
 }
 
 function isPlainObject(value) {
